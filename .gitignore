@@ -1,0 +1,3 @@
+# Build outputs (binaries are attached to GitHub Releases instead)
+bin/ls
+obj/*.o
