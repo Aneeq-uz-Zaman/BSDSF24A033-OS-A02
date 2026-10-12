@@ -110,3 +110,45 @@ Limitations of using only a fixed width of 80:
 - **Wide terminal:** the output uses only the left 80 characters, so it shows fewer columns and many more rows than needed, wasting screen space.
 - **Narrow terminal** (less than 80): lines are longer than the screen, so the terminal wraps them onto the next line and the columns become broken and unreadable.
 - **Resizing:** the layout never adapts when the user resizes the window; with `ioctl()` the next run automatically uses the new width.
+
+---
+
+## Feature 4: ls-v1.3.0 – Horizontal Column Display (-x Option)
+
+### Q1. Compare the implementation complexity of the "down then across" (vertical) printing logic versus the "across" (horizontal) printing logic. Which one requires more pre-calculation and why?
+
+The **"down then across"** (default) logic needs more pre-calculation. Before printing the first line it must know:
+
+- the column width (longest name + 2),
+- how many columns fit (`terminal_width / column_width`),
+- and, most importantly, **how many rows** there will be: `rows = ceil(count / cols)`.
+
+The number of rows is needed because the names that appear side by side on one screen line are not next to each other in the array: the item at row `r`, column `c` is `names[r + c * rows]`. So the total number of files must be known and the whole layout calculated before any output, and the code uses two nested loops (rows, then columns) with index arithmetic.
+
+The **"across"** (`-x`) logic is simpler. Names are printed in the same order as the array, left to right, so one loop is enough. It only needs the column width (from the longest name) and the terminal width; it keeps a running position `pos` on the current line, and when `pos + column_width` would go past the terminal width, it prints `\n` and resets `pos` to 0. It never needs the number of rows or columns in advance.
+
+### Q2. Describe the strategy you used in your code to manage the different display modes (-l, -x, and default). How did your program decide which function to call for printing?
+
+I used a single integer variable `mode` in `main()` together with three named constants:
+
+```c
+#define MODE_DEFAULT    0    /* no option: down then across */
+#define MODE_LONG       1    /* -l */
+#define MODE_HORIZONTAL 2    /* -x */
+```
+
+1. `mode` starts as `MODE_DEFAULT`. The `getopt(argc, argv, "lx")` loop sets it to `MODE_LONG` for `-l` and `MODE_HORIZONTAL` for `-x`. Because each option overwrites the variable, if both are given the last one wins, the same as the real `ls`.
+2. `main()` passes `mode` to `do_ls(dir, mode)`.
+3. `do_ls()` always does the same first step for every mode: read all the names into the dynamic array and find the longest name.
+4. Then it checks the mode and calls the matching display function:
+
+```c
+if (mode == MODE_LONG)
+    print_long(dir, names, count);
+else if (mode == MODE_HORIZONTAL)
+    print_horizontal(names, count, max_len);
+else
+    print_columns(names, count, max_len);
+```
+
+Finally it frees the array. Because reading is separated from printing, each display function only formats an array it is given, and new modes (or sorting in the next version) can be added in one place. For this version the long listing was changed from reading the directory itself (with `rewinddir()`) to looping over the same array, so all three modes now share the same list of names.
