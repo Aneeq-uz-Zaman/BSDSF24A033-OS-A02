@@ -1,4 +1,4 @@
-# Makefile for ls-v1.1.0
+# Makefile for ls-v1.2.0
 
 CC      = gcc
 CFLAGS  = -Wall -g
@@ -7,8 +7,8 @@ SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
 
-SRC     = $(SRC_DIR)/ls-v1.1.0.c
-OBJ     = $(OBJ_DIR)/ls-v1.1.0.o
+SRC     = $(SRC_DIR)/ls-v1.2.0.c
+OBJ     = $(OBJ_DIR)/ls-v1.2.0.o
 TARGET  = $(BIN_DIR)/ls
 
 all: $(TARGET)
