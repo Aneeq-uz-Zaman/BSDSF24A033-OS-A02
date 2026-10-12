@@ -200,3 +200,46 @@ int compare_names(const void *a, const void *b)
 **How it works for strings:** the array elements are `char *` (pointers to the names), so `qsort()` passes a pointer **to an element**, i.e. a `char **`. We cast `a` to `const char **` and dereference it once (`*`) to get the actual `char *` string, then `strcmp()` compares the two strings character by character (by their byte values) and returns the negative/zero/positive result `qsort()` needs. A common mistake is to cast directly to `char *`, which would compare the bytes of the pointers instead of the names.
 
 The sort happens in `do_ls()` right after all names are read and before the display mode is checked, so the default, `-x` and `-l` outputs are all sorted without changing the display functions. Sorting also works with hidden files, because `strcmp()` simply orders `.` (byte 46) before letters and digits.
+
+---
+
+## Feature 6: ls-v1.5.0 – Colorized Output Based on File Type
+
+### Q1. How do ANSI escape codes work to produce color in a standard Linux terminal? Show the specific code sequence for printing text in green.
+
+A terminal does not just display every byte it receives; it also understands special control sequences. An **ANSI escape code** starts with the ESC character (ASCII 27, written `\033` in octal or `\x1b` in hex in C), followed by `[`, then one or more numbers separated by `;`, and ends with a letter that says what to do. For colours the letter is `m` ("Select Graphic Rendition"). The terminal does not print these bytes; it changes how the following text is drawn until another code changes it again.
+
+Common numbers: `0` = reset all attributes, `1` = bold, `7` = reverse video, `30`–`37` = foreground colours (`31` red, `32` green, `34` blue, `35` magenta/pink).
+
+To print text in green:
+
+```c
+printf("\033[0;32m" "Hello" "\033[0m" "\n");
+```
+
+- `\033[0;32m` – reset attributes (`0`), then set foreground colour green (`32`)
+- `Hello` – the text, drawn in green
+- `\033[0m` – reset back to the normal colour, otherwise everything printed afterwards (including the shell prompt) would stay green
+
+In my code the codes are `#define` macros (`COLOR_GREEN`, `COLOR_RESET`, ...) and `print_colored()` prints `color + name + COLOR_RESET`. Because the codes are invisible but still take up bytes, I could no longer pad names with `%-*s` (it would count the escape bytes as width), so the column functions pad with `col_width - strlen(name)` spaces instead. Colours are only used when `isatty(STDOUT_FILENO)` is true, so redirecting the output to a file or a pipe gives plain text, like the real `ls`.
+
+### Q2. To color an executable file, you need to check its permission bits. Explain which bits in the `st_mode` field you need to check to determine if a file is executable by the owner, group, or others.
+
+There are three execute bits in `st_mode`, one for each class of user:
+
+| Macro | Octal | Meaning |
+|---|---|---|
+| `S_IXUSR` | `0100` | owner (user) can execute |
+| `S_IXGRP` | `0010` | group can execute |
+| `S_IXOTH` | `0001` | others can execute |
+
+Each is checked with a bitwise AND: `st_mode & S_IXUSR` is non-zero if the owner execute bit is set. Like the real `ls`, a file is shown as executable if **any** of the three is set, so I combine the masks with bitwise OR and test them in one step:
+
+```c
+else if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))   /* 0100 | 0010 | 0001 = 0111 */
+    color = COLOR_GREEN;
+```
+
+This check is done only after the file type checks, because directories also have execute bits set (for a directory `x` means "may enter/search it"), and they must be shown in blue, not green. For the same reason the type is obtained with `lstat()`, so a symbolic link is coloured as a link (pink) and not as the file it points to.
+
+The full order in `print_colored()` is: symbolic link (pink) → directory (blue) → character/block device, socket or FIFO (reverse video) → archive by extension `.tar`/`.gz`/`.zip`, found with `strrchr(name, '.')` (red) → any execute bit (green) → no colour.
