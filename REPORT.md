@@ -243,3 +243,43 @@ else if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))   /* 0100 | 0010 | 0001 = 0111 */
 This check is done only after the file type checks, because directories also have execute bits set (for a directory `x` means "may enter/search it"), and they must be shown in blue, not green. For the same reason the type is obtained with `lstat()`, so a symbolic link is coloured as a link (pink) and not as the file it points to.
 
 The full order in `print_colored()` is: symbolic link (pink) → directory (blue) → character/block device, socket or FIFO (reverse video) → archive by extension `.tar`/`.gz`/`.zip`, found with `strrchr(name, '.')` (red) → any execute bit (green) → no colour.
+
+---
+
+## Feature 7: ls-v1.6.0 – Recursive Listing (-R Option)
+
+### Q1. In a recursive function, what is a "base case"? In the context of your recursive `ls`, what is the base case that stops the recursion from continuing forever?
+
+A **base case** is the condition under which a recursive function does **not** call itself again and simply returns. Every recursive call must move closer to a base case; without one the function would keep calling itself until the stack runs out (stack overflow).
+
+In my `do_ls(dir, mode, recursive)`, the recursive call happens only inside this loop, for entries that are directories:
+
+```c
+if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode))
+    do_ls(path, mode, recursive);
+```
+
+So the base case is **a directory that has no subdirectories** (for example a folder containing only files, or an empty folder): the loop finds no entry for which `S_ISDIR()` is true, so no further call is made and the function returns to its caller. A directory that cannot be opened (`opendir()` returns `NULL`, e.g. permission denied) is also a base case, because the function returns immediately.
+
+The recursion is guaranteed to reach these base cases because each call goes one level deeper into a finite directory tree, and two things prevent infinite loops:
+
+- `.` and `..` are never followed (`strcmp(names[i], ".") == 0 || strcmp(names[i], "..") == 0` → `continue`). `.` is the directory itself and `..` its parent; following them would list the same directories forever.
+- `lstat()` is used instead of `stat()`, so a **symbolic link** that points to a directory is seen as a link (`S_ISLNK`), not a directory, and is not entered. Otherwise a link such as `a/loop -> ..` would create a cycle and endless recursion.
+
+### Q2. Explain why it is essential to construct a full path (e.g., "parent_dir/subdir") before making a recursive call. What would happen if you simply called `do_ls("subdir")` from within the `do_ls("parent_dir")` function call?
+
+`readdir()` returns only the **name** of an entry (`d_name`, e.g. `"subdir"`), not its location. A relative path like `"subdir"` is always resolved by the kernel relative to the process's **current working directory**, which my program never changes: it stays the folder where the user ran `ls`, no matter which directory `do_ls()` is currently listing.
+
+So if `do_ls("parent_dir")` called `do_ls("subdir")`, then `opendir("subdir")` and `lstat("subdir")` would look for `./subdir` in the current working directory instead of `./parent_dir/subdir`:
+
+- usually that folder does not exist, so `opendir()` fails ("Cannot open directory") and nothing below the first level is listed;
+- or, worse, a different folder that happens to have the same name in the current directory would be listed by mistake, giving wrong output;
+- deeper levels would make it worse, because `"subsub"` would also be looked up in the current directory instead of `parent_dir/subdir/subsub`.
+
+That is why, before checking and recursing, the code joins the current directory path and the entry name:
+
+```c
+snprintf(path, sizeof(path), "%s/%s", dir, names[i]);   /* "parent_dir" + "subdir" */
+```
+
+Each recursive call receives the complete path (`parent_dir/subdir`, then `parent_dir/subdir/subsub`, ...), so `opendir()` and `lstat()` work at any depth, and the same path is printed as the directory heading (`parent_dir/subdir:`), exactly like `ls -R`. The same full path is also needed for `lstat()` in the long listing and for colouring, for the same reason.
