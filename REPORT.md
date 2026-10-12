@@ -152,3 +152,51 @@ else
 ```
 
 Finally it frees the array. Because reading is separated from printing, each display function only formats an array it is given, and new modes (or sorting in the next version) can be added in one place. For this version the long listing was changed from reading the directory itself (with `rewinddir()`) to looping over the same array, so all three modes now share the same list of names.
+
+---
+
+## Feature 5: ls-v1.4.0 – Alphabetical Sort
+
+### Q1. Why is it necessary to read all directory entries into memory before you can sort them? What are the potential drawbacks of this approach for directories containing millions of files?
+
+`readdir()` returns entries one at a time in the order the file system stores them (for ext4 this is roughly hash order, not alphabetical). Sorting means comparing every name with others: the name that must be printed first might be the very last one `readdir()` returns. So nothing can be printed until **every** name has been seen, which means all names must be kept somewhere, in my case the dynamic array `char **names`, and only then sorted with `qsort()` and displayed.
+
+Drawbacks for a directory with millions of files:
+
+- **Memory:** every name is copied with `strdup()` (up to 256 bytes each) plus an 8-byte pointer in the array. Millions of names can take hundreds of MB; the `realloc()` that doubles the array may also need to copy it into a new larger block, needing old + new size for a moment. If memory runs out, `realloc()`/`strdup()` fail and the program exits.
+- **Delay:** nothing appears on screen until the whole directory has been read and sorted. Sorting costs O(n log n) comparisons, so the user waits with no output, whereas the unsorted v1.0.0 could start printing immediately.
+- (For `-l`, each entry is also `lstat()`-ed, which adds further time on very large directories.)
+
+This is why the real `ls` has the `-U` option ("do not sort"), which lists entries in directory order to avoid this cost.
+
+### Q2. Explain the purpose and signature of the comparison function required by `qsort()`. How does it work, and why must it take `const void *` arguments?
+
+```c
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *));
+```
+
+`qsort()` is a generic sorting algorithm: it can sort an array of **any** type (ints, structs, strings) because it does not know what the elements are. It only knows where the array starts (`base`), how many elements there are (`nmemb`) and how big each one is (`size`). Whenever it needs to know which of two elements comes first, it calls the **comparison function** we pass in as a function pointer. That function must return:
+
+- a negative number if the first element should come before the second,
+- 0 if they are equal,
+- a positive number if the first should come after the second.
+
+My call and comparison function:
+
+```c
+qsort(names, count, sizeof(char *), compare_names);
+
+int compare_names(const void *a, const void *b)
+{
+    const char *name1 = *(const char **)a;
+    const char *name2 = *(const char **)b;
+    return strcmp(name1, name2);
+}
+```
+
+**Why `const void *`:** `void *` is C's generic pointer, which can hold the address of any type. Since `qsort()` must work for every type, it can only hand our function the addresses of two elements as `void *`. `const` promises that the comparison function only reads the elements and does not change them while the array is being sorted. Because of this, all comparison functions must have exactly this signature, and inside we cast the pointers back to the real type.
+
+**How it works for strings:** the array elements are `char *` (pointers to the names), so `qsort()` passes a pointer **to an element**, i.e. a `char **`. We cast `a` to `const char **` and dereference it once (`*`) to get the actual `char *` string, then `strcmp()` compares the two strings character by character (by their byte values) and returns the negative/zero/positive result `qsort()` needs. A common mistake is to cast directly to `char *`, which would compare the bytes of the pointers instead of the names.
+
+The sort happens in `do_ls()` right after all names are read and before the display mode is checked, so the default, `-x` and `-l` outputs are all sorted without changing the display functions. Sorting also works with hidden files, because `strcmp()` simply orders `.` (byte 46) before letters and digits.
