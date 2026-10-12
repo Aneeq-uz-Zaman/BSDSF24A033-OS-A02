@@ -66,3 +66,47 @@ For example, `/usr/bin/passwd` has mode `0104755` → type bits = regular file, 
 - The time comes from `ctime()`. Like `ls`, files modified in the last six months show `Mon DD HH:MM`, and older (or future) files show `Mon DD  YYYY`.
 - Device files show `major, minor` in the size column instead of a size.
 - The output was compared with the real `ls -lU` (unsorted, since sorting comes in v1.4.0) on many directories and matched exactly. Known differences: GNU `ls` adds a `+` after the permissions of files that have ACLs, which this version does not detect; and in `/dev`, GNU `ls` prints normal files one column narrower than device files, while this version keeps all columns aligned.
+
+---
+
+## Feature 3: ls-v1.2.0 – Column Display (Down Then Across)
+
+### Q1. Explain the general logic for printing items in a "down then across" columnar format. Why is a simple single loop through the list of filenames insufficient for this task?
+
+In "down then across" order the names fill the **first column from top to bottom**, then the second column, and so on:
+
+```
+a  d  g
+b  e  h
+c  f
+```
+
+The steps in my `do_ls()` / `print_columns()` are:
+
+1. **Read all names first** into a dynamic array (`char **names`, grown with `realloc()`, each name copied with `strdup()`), and remember the length of the longest name.
+2. **Work out the layout:**
+   - column width = longest name + 2 spaces
+   - `cols = terminal_width / column_width` (at least 1)
+   - `rows = ceil(count / cols)`, computed as `(count + cols - 1) / cols`
+3. **Print row by row.** The terminal can only print left to right, top to bottom, so the outer loop goes over rows and the inner loop over columns. The item at row `r`, column `c` is `names[r + c * rows]`: moving down one row adds 1 to the index, and moving right one column skips a whole column, i.e. adds `rows`. Each name is padded with spaces to the column width (`%-*s`), except the last name in a row.
+
+A single loop (`for i = 0 .. count-1`) prints the names in the order `0, 1, 2, 3, ...`. On screen that fills each **row** first (across then down), which is the `-x` style, not the `ls` default. To print down then across, the names that sit next to each other on a screen line are **not** next to each other in the array (they are `rows` apart), so we need to know the number of rows first and then jump through the array with `r + c * rows`. Also, a single loop cannot know the column width or the number of rows without first having seen every name.
+
+### Q2. What is the purpose of the `ioctl` system call in this context? What would be the limitations of your program if you only used a fixed-width fallback (e.g., 80 columns) instead of detecting the terminal size?
+
+`ioctl()` ("input/output control") sends device-specific requests to a file descriptor. With the request `TIOCGWINSZ` ("Terminal IOCtl Get WINdow SiZe") on `STDOUT_FILENO`, the terminal driver fills a `struct winsize` whose `ws_col` field is the current width of the terminal in characters (and `ws_row` the height). My `get_terminal_width()` uses this to calculate how many columns fit:
+
+```c
+struct winsize w;
+if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0)
+    return DEFAULT_WIDTH;          /* 80 */
+return w.ws_col;
+```
+
+If the output is not a terminal (for example redirected to a file or piped to another command), `ioctl()` fails and the program falls back to 80 columns.
+
+Limitations of using only a fixed width of 80:
+
+- **Wide terminal:** the output uses only the left 80 characters, so it shows fewer columns and many more rows than needed, wasting screen space.
+- **Narrow terminal** (less than 80): lines are longer than the screen, so the terminal wraps them onto the next line and the columns become broken and unreadable.
+- **Resizing:** the layout never adapts when the user resizes the window; with `ioctl()` the next run automatically uses the new width.
